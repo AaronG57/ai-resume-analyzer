@@ -1,92 +1,106 @@
-# app.py
 import streamlit as st
-from utils.resume_parser import parse_resume, clean_text
-from utils.job_matcher import compute_match_score
-from utils.ai_feedback import get_ai_feedback
-import io
+from gpt4all import GPT4All
+import PyPDF2
+import re
 
-st.set_page_config(page_title="AI Resume Analyzer", layout="wide")
-st.title("🧠 AI Resume Analyzer")
-st.write("Upload your resume (PDF or DOCX) and paste a job description to get a fit score and feedback.")
+# -----------------------------
+# App setup
+# -----------------------------
+st.set_page_config(page_title="AI Resume Analyzer (Offline)", page_icon="🧠", layout="wide")
 
-with st.sidebar:
-    st.header("How to use")
-    st.markdown("""
-    1. Upload a resume (PDF or DOCX).  
-    2. Paste the job description text.  
-    3. (Optional) Set OPENAI_API_KEY in environment to get AI feedback.  
-    4. Click Analyze.
-    """)
-    st.markdown("**Tip:** Add a sample job to `sample_job.txt` for quick testing.")
+st.title("🧠 AI Resume & Job Match Analyzer (Offline GPT4All)")
+st.write("Upload your resume, paste a job description, and get offline AI feedback & match analysis!")
 
-uploaded_file = st.file_uploader("Upload resume (PDF / DOCX / TXT)", type=["pdf", "docx", "txt"])
-job_desc = st.text_area("Paste job description (or leave blank to use sample)", height=200)
+# -----------------------------
+# Initialize the model
+# -----------------------------
+@st.cache_resource
+def load_model():
+    model_name = "mistral-7b-instruct-v0.1.Q4_0.gguf"  # Official GPT4All model name
+    return GPT4All(model_name)
 
-col1, col2 = st.columns([1, 3])
+model = load_model()
 
-with col1:
-    candidate_name = st.text_input("Candidate name (optional)")
-    analyze_btn = st.button("Analyze resume")
+# -----------------------------
+# Local AI generation function
+# -----------------------------
+def generate_text(prompt, max_tokens=300):
+    system_prompt = (
+        "You are a professional resume screening assistant. "
+        "Evaluate resumes vs job descriptions. Output match %, strengths, improvements."
+    )
 
-with col2:
-    st.info("Results will appear here after analysis.")
+    final_prompt = f"""
+System: {system_prompt}
 
-# Load sample job if user left blank and sample exists
-if not job_desc:
-    try:
-        with open("sample_job.txt", "r", encoding="utf-8") as f:
-            job_desc = f.read()
-    except Exception:
-        job_desc = ""
+User: {prompt}
 
-def safe_read_uploaded(u):
-    try:
-        return u.read()
-    except:
-        return None
+Assistant:
+"""
 
-if analyze_btn:
-    if not uploaded_file:
-        st.error("Please upload a resume file first.")
-    elif not job_desc:
-        st.error("Please paste a job description or create sample_job.txt.")
+    with model.chat_session():
+        response = model.generate(final_prompt, max_tokens=max_tokens, temp=0.6)
+
+    return response.strip() if response.strip() else "⚠️ No response — try shorter text."
+
+# -----------------------------
+# Helper: Extract text from PDF
+# -----------------------------
+def extract_text(file):
+    text = ""
+    if file.name.endswith(".pdf"):
+        reader = PyPDF2.PdfReader(file)
+        for page in reader.pages:
+            text += page.extract_text()
     else:
-        st.info("Parsing resume...")
-        # Rewind file-like if needed
-        bytes_data = safe_read_uploaded(uploaded_file)
-        # We need to pass a file-like again to parser; create BytesIO
-        import io
-        file_like = io.BytesIO(bytes_data)
-        # filename matters for extension detection
-        filename = uploaded_file.name
-        resume_text = parse_resume(file_like, filename)
-        if not resume_text:
-            st.error("Could not extract text from the resume. Try another file.")
+        text = file.read().decode("utf-8")
+    return text
+
+# -----------------------------
+# Streamlit interface
+# -----------------------------
+st.subheader("📄 Upload Your Resume")
+uploaded_file = st.file_uploader("Upload your resume (PDF or TXT)", type=["pdf", "txt"])
+
+st.subheader("💼 Job Description")
+job_description = st.text_area("Paste the job description here:", height=200)
+
+if uploaded_file is not None:
+    resume_text = extract_text(uploaded_file)
+    st.success("✅ Resume loaded successfully!")
+    st.text_area("Resume Preview", resume_text[:2000], height=200)
+
+    if st.button("🔍 Analyze Match"):
+        if not job_description.strip():
+            st.warning("Please paste a job description first.")
         else:
-            st.success("Resume parsed.")
-            st.subheader("Resume excerpt")
-            st.write(resume_text[:2000] + ("..." if len(resume_text) > 2000 else ""))
+            with st.spinner("Analyzing resume vs job description..."):
+                prompt = f"""
+Compare the following resume and job description and provide:
 
-            st.subheader("Job description excerpt")
-            st.write(job_desc[:2000] + ("..." if len(job_desc) > 2000 else ""))
+1. Match percentage (0–100%)
+2. Strengths
+3. Improvements to increase match
 
-            st.subheader("Match score")
-            score = compute_match_score(resume_text, job_desc)
-            st.progress(min(100, int(score)))
-            st.metric("Fit score", f"{score} / 100")
+Resume:
+{resume_text[:2000]}
 
-            st.subheader("AI feedback & suggestions")
-            with st.spinner("Generating feedback... (OpenAI key required for advanced feedback)"):
-                feedback = get_ai_feedback(resume_text, job_desc, candidate_name=candidate_name)
-            # feedback may be dict or text
-            if isinstance(feedback, dict):
-                st.markdown("**Summary**")
-                st.write(feedback.get("summary", ""))
-                st.markdown("**Top suggestions**")
-                suggestions = feedback.get("suggestions", [])
-                for s in suggestions:
-                    st.write("- " + s)
-                st.markdown("**Headline suggestion**")
-                st.info(feedback.get("headline", ""))
-            else:
-                st.write(feedback)
+Job Description:
+{job_description[:1500]}
+"""
+
+                analysis = generate_text(prompt, max_tokens=350)
+
+            score_match = re.search(r"(\d{1,3})\s*%", analysis)
+            score = int(score_match.group(1)) if score_match else None
+
+            st.metric("Match Score", f"{score}%" if score else "N/A")
+
+            st.write("### 🧠 AI Feedback:")
+            st.info(analysis)
+
+else:
+    st.warning("Please upload your resume to begin.")
+
+st.markdown("---")
+st.caption("🔒 Powered by GPT4All — 100% offline, no OpenAI cost.")
