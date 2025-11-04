@@ -1,106 +1,80 @@
 import streamlit as st
-from gpt4all import GPT4All
+from groq import Groq
 import PyPDF2
 import re
+import os
+from dotenv import load_dotenv
 
-# -----------------------------
-# App setup
-# -----------------------------
-st.set_page_config(page_title="AI Resume Analyzer (Offline)", page_icon="🧠", layout="wide")
+load_dotenv()
+# Streamlit config
+st.set_page_config(page_title="AI Resume Analyzer", page_icon="🧠", layout="wide")
+st.title("🧠 AI Resume & Job Match Analyzer (Groq — Cloud Fast)")
+st.write("Upload your resume, paste a job description, and get AI match score & feedback!")
 
-st.title("🧠 AI Resume & Job Match Analyzer (Offline GPT4All)")
-st.write("Upload your resume, paste a job description, and get offline AI feedback & match analysis!")
+# Get API Key from Streamlit Secrets
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# -----------------------------
-# Initialize the model
-# -----------------------------
-@st.cache_resource
-def load_model():
-    model_name = "mistral-7b-instruct-v0.1.Q4_0.gguf"  # Official GPT4All model name
-    return GPT4All(model_name)
-
-model = load_model()
-
-# -----------------------------
-# Local AI generation function
-# -----------------------------
-def generate_text(prompt, max_tokens=300):
-    system_prompt = (
-        "You are a professional resume screening assistant. "
-        "Evaluate resumes vs job descriptions. Output match %, strengths, improvements."
-    )
-
-    final_prompt = f"""
-System: {system_prompt}
-
-User: {prompt}
-
-Assistant:
-"""
-
-    with model.chat_session():
-        response = model.generate(final_prompt, max_tokens=max_tokens, temp=0.6)
-
-    return response.strip() if response.strip() else "⚠️ No response — try shorter text."
-
-# -----------------------------
-# Helper: Extract text from PDF
-# -----------------------------
+# PDF text extractor
 def extract_text(file):
     text = ""
-    if file.name.endswith(".pdf"):
-        reader = PyPDF2.PdfReader(file)
-        for page in reader.pages:
-            text += page.extract_text()
-    else:
-        text = file.read().decode("utf-8")
+    reader = PyPDF2.PdfReader(file)
+    for page in reader.pages:
+        text += page.extract_text() or ""
     return text
 
-# -----------------------------
-# Streamlit interface
-# -----------------------------
-st.subheader("📄 Upload Your Resume")
-uploaded_file = st.file_uploader("Upload your resume (PDF or TXT)", type=["pdf", "txt"])
+# AI function
+def analyze_resume(resume, job):
+    prompt = f"""
+You are a professional HR hiring AI. Compare this resume to the job description.
 
-st.subheader("💼 Job Description")
-job_description = st.text_area("Paste the job description here:", height=200)
-
-if uploaded_file is not None:
-    resume_text = extract_text(uploaded_file)
-    st.success("✅ Resume loaded successfully!")
-    st.text_area("Resume Preview", resume_text[:2000], height=200)
-
-    if st.button("🔍 Analyze Match"):
-        if not job_description.strip():
-            st.warning("Please paste a job description first.")
-        else:
-            with st.spinner("Analyzing resume vs job description..."):
-                prompt = f"""
-Compare the following resume and job description and provide:
-
-1. Match percentage (0–100%)
-2. Strengths
-3. Improvements to increase match
+1. Give a match score (0-100%)
+2. List top strengths
+3. List weaknesses
+4. Suggest resume improvements
+5. Suggest keywords missing from resume
 
 Resume:
-{resume_text[:2000]}
+{resume[:3000]}
 
 Job Description:
-{job_description[:1500]}
+{job[:2000]}
+
+Return in clean bullet format.
 """
 
-                analysis = generate_text(prompt, max_tokens=350)
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.4,
+        max_tokens=500
+    )
 
-            score_match = re.search(r"(\d{1,3})\s*%", analysis)
-            score = int(score_match.group(1)) if score_match else None
+    return response.choices[0].message.content
 
-            st.metric("Match Score", f"{score}%" if score else "N/A")
+# Upload resume
+uploaded_file = st.file_uploader("Upload your resume (PDF)", type=["pdf"])
 
-            st.write("### 🧠 AI Feedback:")
-            st.info(analysis)
+# Job Description Input
+job_description = st.text_area("Paste the job description here:", height=200)
+
+if uploaded_file and job_description.strip():
+    resume_text = extract_text(uploaded_file)
+    st.success("✅ Resume uploaded!")
+    st.text_area("Resume Preview", resume_text[:1500])
+
+    if st.button("🔍 Analyze Match"):
+        with st.spinner("Analyzing with AI..."):
+            result = analyze_resume(resume_text, job_description)
+
+        # Extract score
+        match = re.search(r"(\d{2,3})\s*%", result)
+        score = match.group(1) if match else "N/A"
+
+        st.metric("Match Score", f"{score}%")
+        st.write("### 💡 AI Feedback")
+        st.info(result)
 
 else:
-    st.warning("Please upload your resume to begin.")
+    st.warning("Upload your resume and paste job description to continue.")
 
-st.markdown("---")
-st.caption("🔒 Powered by GPT4All — 100% offline, no OpenAI cost.")
+st.caption("Powered by Groq + Mixtral — lightning-fast job matching 🚀")

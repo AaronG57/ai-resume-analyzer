@@ -1,8 +1,4 @@
 streamlit
-pdfplumber
-python-docx
-openai
-scikit-learn
-numpy
-pandas
-tqdm
+groq
+PyPDF2
+python-dotenv
